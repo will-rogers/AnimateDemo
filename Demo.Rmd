@@ -1,0 +1,440 @@
+---
+title: "Using gganimate for GPS movements"
+author: "Will Rogers"
+output: html_document
+---
+### Package Dependencies
+```{r}
+require(move)
+require(tidyverse)
+require(gganimate)
+require(raster)
+require(readr)
+require(viridis)
+require(lubridate)
+```
+
+### Getting MoveBank data
+You will need to make a login and certify a release for each dataset you download, but it's really straight-forward. I saved it as a .csv just for this.
+
+The dataset I am downloading here is from: 
+
+Ciuti S, Muhly TB, Paton DG, McDevitt AD, Musiani M, Boyce MS (2012) Human selection of elk behavioural traits in a landscape of fear. Proceedings of the Royal Society B 279(1746): 4407-4416. doi:10.1098/rspb.2012.1483
+
+Boyce MS, Ciuti S (2020) Data from: Human selection of elk behavioural traits in a landscape of fear. Movebank Data Repository. doi:10.5441/001/1.j484vk24
+
+This is my first time using MoveBank, so please let me know if any other attributions need to be made!
+```{r}
+# login <- movebankLogin()
+# data <- getMovebankData(study="Elk in southwestern Alberta", login=login, removeDuplicatedTimestamps=T)
+# df <- as.data.frame(data)
+# write.csv(df, "elk_movement.csv")
+
+df <- read.csv("/Users/willrogers/Downloads/Research/BHS_Mvmt/Sheep_Mvmt/elk_movement.csv")
+```
+
+Cool, so we have some data divided by ID with some other variables added in with 50% of the data
+```{r}
+df %>% 
+  group_by(tag_id) %>% 
+  sample_frac(.5) %>% 
+  ggplot(aes(x = location_long, y = location_lat, color = factor(tag_id))) +
+  geom_point(alpha = 0.1) +
+  scale_color_discrete(guide = F) +
+  coord_fixed()
+```
+
+Here is just for one random individual with color as temperature, looks good!
+```{r}
+set.seed(12345)
+df %>% 
+  filter(tag_id == sample(df$tag_id,1)) %>% 
+  sample_frac(.5) %>% 
+  ggplot(aes(x = location_lat, y = location_long, color = external_temperature)) +
+  geom_point(alpha = 0.1) +
+  scale_color_viridis() +
+  coord_fixed()
+```
+
+We can also check out the range of dates for the study system.
+```{r}
+df %>% 
+  filter(tag_id == sample(df$tag_id,1)) %>% 
+  summarize(min = min(timestamp),
+            max = max(timestamp))
+```
+
+Maybe we are only interested in a subset of these dates/individuals. We can trim the dataset here. Here, I only take 2009-2010. 
+```{r}
+set.seed(12345)
+trim <- df %>% 
+  filter(timestamp < as.POSIXct("2010-01-01") &
+           timestamp > as.POSIXct("2009-01-01"))  
+```
+
+If you wanted to stack a whole bunch of observation periods over one another, you could alternatively convert date into Julian day, convert year into a grouping variable, and then convert the year of individual observation to be all over the same period. Here is an example of that code - I won't execute. This might be helpful if you're only interested in like a couple months out of the year for analysis. This will preserve the chronological structure of the data in the "timestamp" column, but you could alternatively use row index.
+```{r }
+# data.mock <- data %>%
+#   mutate(julian_day = yday(timestamp),
+#          year.group = year(timestamp))
+# year(data.mock$timestamp) <- 2000
+# 
+# data.mock <- data.mock %>% 
+#   group_by(factor(tag_id)) %>% 
+#   arrange(timestamp) %>% 
+#   mutate(index = row_number())
+```
+
+### Preparing for gganimate
+The download through R of data from movebank already sorts data into the required format for moveVis - a really handy and straight-forward visualization tool.
+
+The functions in gganimate are really straight-forward too, but the don't have much documentation. Hopefully this will help with that kind of stuff.
+
+Lets re-create that plot from earlier, a bit prettier, with our trimmed dataset with 50% of locations.
+```{r}
+set.seed(12345)
+trim %>% 
+  group_by(tag_id) %>% 
+  sample_frac(0.5) %>% 
+  arrange(timestamp) %>% 
+  ggplot(aes(x = location_long, 
+             y = location_lat, 
+             color = factor(tag_id), 
+             shape = sex, 
+             group = tag_id)) +
+  geom_point(alpha = 1, size = 0.2) +
+  geom_path(alpha = 0.6, size = 0.2) +
+  scale_color_viridis_d(name = "ID",
+                        guide = F) +
+  scale_shape_discrete(name = "Sex") +
+  coord_fixed() +
+  theme_void() 
+```
+
+It might be nice to look only at elk on one range at a time for clarity. I will just find all IDs that occur in an extent. Here, long's between -114.3 and -114.2 and lats between 49.3 and 49.6 look decent. We can do that super easily, we just need the the coords to subset by and extract the IDs later.
+```{r}
+set.seed(123)
+IDs.wanted <- trim %>% 
+  filter(location_long > -114.3 & 
+           location_long < -114.2 &
+           location_lat > 49.3 &
+           location_lat < 49.6) %>% 
+  group_by(tag_id) %>% 
+  tally() %>% 
+  filter(row_number() %in% sample(1:n(),9))
+
+trim %>% 
+  filter(tag_id %in% IDs.wanted$tag_id) %>% 
+  ggplot(aes(x = location_long, 
+             y = location_lat, 
+             color = factor(tag_id), 
+             shape = sex, 
+             group = tag_id)) +
+  geom_point(alpha = 1, size = 0.2) +
+  geom_path(alpha = 0.6, size = 0.2) +
+  scale_color_viridis_d(name = "ID") +
+  scale_shape_discrete(name = "Sex") +
+  coord_fixed() 
+```
+
+The other important component of animations is standardizing frames. In the moveVis package, they have a nice function to do this for you, but I find it really limits datasets with lots of missing data, etc. We can do it pretty easily "manually".
+
+We need a string of times. These data were collected every two hours, so that's super easy to round off too.
+```{r}
+trim. <- trim %>% 
+  filter(tag_id %in% IDs.wanted$tag_id)
+trim.$time.discrete <- round_date(as.POSIXct(trim.$timestamp),unit="2 hours")
+```
+
+### Base Layers
+
+It would also be nice to plot some data beneath this, so we know something about the landscape. "raster" offers a nice way to gather raster data for a region - we just need the country for our dataset. 
+```{r}
+ra <- raster::getData('alt', country = c("CAN","US"))
+plot(ra)
+```
+
+That is way too much data for us, and will slow down animations. We can find the extent of out GPS locs, and then trim the raster. We can us sp to do this - convert to spatial points dataframe and then run "extent()", or we could just do it the simple way. We also might want to add a bit of a buffer. Then we can trim the raster. I will also pullout hillshade - a nice touch for later. As we can see, the resolution isn't great, but your own data will hopefully be better.
+```{r}
+extent <- c(range(trim.$location_long),range(trim.$location_lat)) 
+extent <- extent + c(-.1,.1,-.1,.1)
+
+cropped <- crop(ra, extent)
+
+elev <- terrain(cropped, 
+              opt = c("slope", "aspect", "TPI", 
+                      "TRI", "roughness", "flowdir"))
+elev$hillshade <- hillShade(elev$slope, elev$aspect, normalize = T)
+elev$elevation <- cropped$CAN_msk_alt
+
+plot(elev)
+```
+
+GGplot - as far as I know - wants true raster files plotted as an image, or as a tile/raster plot. Both of which aren't satisfied by the current raster. So, I will regularly sample it to generate dataframe. I like this color ramp for elevation, but it is easily customized.
+```{r}
+ele.df <- sampleRegular(elev,
+                        size = 10^10,
+                        asRaster = TRUE) %>%
+  as.data.frame(xy = TRUE,
+                na.rm = TRUE) 
+
+ele.df %>% 
+  ggplot(aes(x,y)) +
+  geom_raster(aes(fill = elevation), interpolate = T) +
+  scale_fill_gradientn(colors = c("darkgreen","greenyellow","tan","white","white")) +
+  geom_raster(aes(alpha = hillshade), interpolate = T) +
+  scale_alpha(guide=F) +
+  theme_void()
+```
+
+"GGmap" also provides a nice set of maps (limited if you want free) that can get you pretty far. I would still recommend getting high quality elevation data to be able to map hillshade and the like!
+```{r}
+require(ggmap)
+require(gplots)
+basemap <- get_map(location = matrix(extent, nrow = 2, byrow = T), maptype = "watercolor")
+ggmap(basemap) 
+```
+
+### Creating gganimate object/animation
+
+We can now start to build our base graphic. One problem, at least for this tutorial speed, is that the dataset is massive. I will segment the dataset to only plot certain months. This will help limit the frame rate rendering times. Additionally, I define the interval more coarsely, taking every 12th row, meaning an interval of 24 hours, not 2.
+```{r}
+daily <- trim. %>% 
+  filter(timestamp < as.POSIXct("2009-11-01") &
+           timestamp > as.POSIXct("2009-03-01")) %>% 
+  group_by(factor(tag_id)) %>% 
+  filter(row_number() %in% seq(1, n(), by = 12))
+
+daily %>% 
+  group_by(tag_id) %>% 
+  tally()
+
+p <- ggmap(basemap) +
+  geom_point(data = daily,
+             aes(x=location_long,
+                 y=location_lat,
+                 group=tag_id,
+                 color=factor(tag_id)),
+             alpha = 0.75, size = 2) +
+  scale_color_discrete(name = 'ID',
+                       guide = "none") +
+  scale_shape_discrete(name = 'Season',
+                       guide = "none") +
+  theme_void() 
+p
+```
+
+Now, we can animate our plot! We need to specify a dimension to animate along. Since we created out discrete times, we now have that dimension. "transition_reveal" is one of these functions in gganimate which is nice for bringing in data and taking it out - similar to what we want for conveying movement. This is dead simple, 100 frames, 10 frames per second - but we can make this way better. 
+```{r}
+anim <- p +
+  transition_reveal(along = time.discrete, keep_last = F)
+gganimate::animate(anim)
+```
+
+One way to make this better is to use a function called "shadow_wake". This creates a bunch of trailing points behind each point in our animation to simulate movement in our eyes. Here, wake_length is the proportion of frames that the wake will be visible - here 5% of 100 frames. Size specifies the final point size of the wake. Alpha specifies a logical of whether the tail gets more translucent. Wrap, when false, eliminates this pesky characteristic of looping the wakes over frame 100-1. Falloff specifies how size and alpha decay.
+```{r}
+anim + 
+  shadow_wake(wake_length = 0.05, size = 0, alpha = T, wrap = F, falloff = "linear") 
+```
+
+
+There are (at least) two reasons this still looks crappy. First, we have way more locations than we do animated frames around 300-500 points per elk and only 100 frames. Lets increase frame count to 250. Second, we can increase the amount of intermediate frames being calculated to boost both the wake resolution and the intermediate locations. We control the intermediate frames with "detail", and total frames by "nframes". Another handy function for this much "missing" data is the "ease_aes" function which essential interpolates between missing data. I also added a title for the animation frame. Pretty nice, no? And you can definitely fit the number of frames to the individual levels of data, this is just a quick demo.
+```{r}
+p <- anim + 
+  shadow_wake(wake_length = 0.025, 
+              size = 0, 
+              alpha = T, 
+              wrap = F, 
+              falloff = "linear") +
+  ease_aes('linear') +
+  ggtitle("Date: {format(frame_along, '%B %d')}") 
+gganimate::animate(p, nframes = 250, 
+                   fps=10, detail = 30)
+```
+
+### Following points
+
+One aspect of gganimate and moveVis that is not entirely awesome, is it is pretty difficult to follow points if there is underlying data. I rewrote a function from gganimate to be able to do this. Note, this is hard-coded and will need to bee changed if you alter the input raster layers. Here I am essentially asking the framing code to ignore the x,y limits from the raster layers (layers 1 and 2 in ggplot code), and only focus on layer 3 - the point file. Additionally, I added in a buffer around points.
+```{r}
+view_follow <- function(fixed_x = FALSE, fixed_y = FALSE, exclude_layer = NULL, aspect_ratio = 1) {
+  ggproto(NULL, ViewFollow, exclude_layer = exclude_layer, aspect_ratio = aspect_ratio,
+          fixed_lim = list(x = fixed_x, y = fixed_y))
+}
+ViewFollow <- ggproto('ViewFollow', View,
+                      set_view = function(self, plot, params, i) {
+                        if (inherits(plot$layout$coord, 'CoordPolar')) {
+                          stop('This view does not support polar coordinates')
+                        }
+                        ranges <- self$get_ranges(plot$data, params)
+                        x_range <- inf.omit(unlist(lapply(ranges, `[[`, 'x')))[5:6] #edited
+                        y_range <- inf.omit(unlist(lapply(ranges, `[[`, 'y')))[5:6] #edited
+                        x_range <- x_range + c(-0.025,0.025) #edited
+                        y_range <- y_range + c(-0.025,0.025) #edited
+                        x_range <- plot$layout$panel_scales_x[[1]]$trans$inverse(x_range)
+                        y_range <- plot$layout$panel_scales_y[[1]]$trans$inverse(y_range)
+                        
+                        self$reset_limits(plot, x_range, y_range)
+                      }
+)
+inf.omit <- function(x) x[is.finite(x)]
+```
+
+Now, I can use this function "view_follow" to follow an individual through time! For some odd reason I haven't figured out yet, this function can't work with fixed coordinates, so I jump back to using the raster dataset. You can tweak inputs to make this better for your points, your frames, etc. There are a ton of customization with ggplot and gganimate - a general advantage over moveVis.
+```{r}
+set.seed(123)
+p <- ggplot() +
+  geom_raster(ele.df,
+              mapping=aes(x=x, y=y, fill=elevation),
+              interpolate = T) +
+  scale_fill_gradientn(colors = c("darkgreen","greenyellow","tan","white","white"))+
+  geom_raster(ele.df,
+              mapping=aes(x=x, y=y, alpha=hillshade),
+              interpolate = T) +
+  scale_alpha(guide=F) +
+  # coord_fixed() +
+  geom_point(data = daily %>% 
+               filter(tag_id == 933728452) %>% 
+              arrange(time.discrete),
+             aes(x=location_long,y=location_lat,group=tag_id,
+                 color=factor(tag_id)),
+             alpha = 0.75, size = 2) +
+  scale_color_discrete(name = 'ID',
+                       guide = "none") +
+  scale_shape_discrete(name = 'Season',
+                       guide = "none") +
+  theme_void() + 
+  transition_reveal(along = time.discrete, keep_last = F) +
+  shadow_wake(wake_length = 0.15, 
+              size = 0, 
+              alpha = T, 
+              wrap = F, 
+              falloff = "linear") +
+  ease_aes('linear') +
+  ggtitle("Date: {format(frame_along, '%B %d')}") +
+  view_follow()
+gganimate::animate(p, nframes = 200, 
+                   fps=7.5, detail = 30)
+
+```
+
+To make it a bit faster to render, I drop the raster layers below. When we don't need static layer like a map, there are a whole other world of tools for "following" individuals in animations. "view_zoom" is an especially nice function if group interplay dynamics are important.
+
+Additionally, you can play with the aesthetics and visual effects of transitions.
+
+Here are just a couple variations based on default functions in gganimate
+
+```{r}
+set.seed(12345)
+p <- ggplot() +
+  geom_point(data = daily,
+             aes(x=location_long,y=location_lat,group=tag_id,
+                 color=factor(tag_id)),
+             alpha = 0.75, size = 2) +
+  scale_color_discrete(name = 'ID',
+                       guide = "none") +
+  scale_shape_discrete(name = 'Season',
+                       guide = "none") +
+  theme_void() + 
+  transition_reveal(along = time.discrete, keep_last = F) +
+  shadow_wake(wake_length = 0.05, 
+              size = 5, 
+              alpha = T, 
+              wrap = F, 
+              falloff = "linear") +
+  ease_aes('linear') +
+  ggtitle("Date: {format(frame_along, '%B %d')}") 
+gganimate::animate(p, nframes = 100, 
+                   fps=7.5, detail = 15)
+```
+
+```{r}
+set.seed(12345)
+p <- ggplot() +
+  geom_point(data = daily,
+             aes(x=location_long,
+                 y=location_lat,
+                 group=tag_id,
+                 color=factor(tag_id)),
+             alpha = 0.75, size = 2) +
+  scale_color_discrete(name = 'ID',
+                       guide = "none") +
+  geom_path(data = daily,
+             aes(x=location_long,
+                 y=location_lat,
+                 group=tag_id,
+                 color=factor(tag_id)),
+             alpha = 1, size = 0.5) +
+  theme_void() + 
+  transition_reveal(along = time.discrete, keep_last = F) +
+  shadow_wake(wake_length = 0.05, 
+              size = 0.1, 
+              alpha = T, 
+              wrap = F, 
+              falloff = "linear") +
+  ease_aes('linear') +
+  ggtitle("Date: {format(frame_along, '%B %d')}") 
+gganimate::animate(p, nframes = 100, 
+                   fps=7.5, detail = 15)
+```
+
+
+```{r}
+set.seed(12345)
+p <- ggplot(data = daily) +
+  geom_point(aes(x=location_long,
+                 y=location_lat,
+                 group=factor(tag_id),
+                 color=factor(tag_id)),
+             alpha = 0.75, size = 2) +
+  geom_path(aes(x=location_long,
+                 y=location_lat,
+                 group=tag_id,
+                 color=factor(tag_id)),
+             alpha = 1, size = 0.5) +
+  scale_color_discrete(name = 'ID',
+                       guide = F) +
+  theme_void() + 
+  facet_wrap(.~tag_id) +
+  transition_reveal(along = time.discrete, keep_last = F) +
+  shadow_wake(wake_length = 0.05, 
+              size = 0.1, 
+              alpha = T, 
+              wrap = F, 
+              falloff = "linear") +
+  ease_aes('linear') +
+  ggtitle("Date: {format(frame_along, '%B %d')}")
+gganimate::animate(p, nframes = 100, 
+                   fps=7.5, detail = 15)
+```
+
+```{r}
+set.seed(12345)
+p <- ggplot() +
+  geom_point(data = daily,
+             aes(x=location_long,
+                 y=location_lat,
+                 group=tag_id,
+                 color=factor(tag_id)),
+             alpha = 0.75, size = 2) +
+  scale_color_discrete(name = 'ID',
+                       guide = "none") +
+  geom_path(data = daily,
+             aes(x=location_long,
+                 y=location_lat,
+                 group=tag_id,
+                 color=factor(tag_id)),
+             alpha = 1, size = 0.5) +
+  theme_void() + 
+  transition_reveal(along = time.discrete, keep_last = F) +
+  shadow_wake(wake_length = 0.05, 
+              size = 0.1, 
+              alpha = T, 
+              wrap = F, 
+              falloff = "linear") +
+  ease_aes('linear') +
+  ggtitle("Date: {format(frame_along, '%B %d')}") +
+  facet_wrap(.~tag_id)
+gganimate::animate(p, nframes = 100, 
+                   fps=7.5, detail = 15)
+```
+

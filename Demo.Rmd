@@ -407,34 +407,3 @@ gganimate::animate(p, nframes = 100,
                    fps=7.5, detail = 15)
 ```
 
-```{r}
-set.seed(12345)
-p <- ggplot() +
-  geom_point(data = daily,
-             aes(x=location_long,
-                 y=location_lat,
-                 group=tag_id,
-                 color=factor(tag_id)),
-             alpha = 0.75, size = 2) +
-  scale_color_discrete(name = 'ID',
-                       guide = "none") +
-  geom_path(data = daily,
-             aes(x=location_long,
-                 y=location_lat,
-                 group=tag_id,
-                 color=factor(tag_id)),
-             alpha = 1, size = 0.5) +
-  theme_void() + 
-  transition_reveal(along = time.discrete, keep_last = F) +
-  shadow_wake(wake_length = 0.05, 
-              size = 0.1, 
-              alpha = T, 
-              wrap = F, 
-              falloff = "linear") +
-  ease_aes('linear') +
-  ggtitle("Date: {format(frame_along, '%B %d')}") +
-  facet_wrap(.~tag_id)
-gganimate::animate(p, nframes = 100, 
-                   fps=7.5, detail = 15)
-```
-
